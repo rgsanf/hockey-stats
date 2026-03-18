@@ -7,19 +7,13 @@
  *   - skater/realtime     → hits (and blocked shots, giveaways, etc.)
  *   - skater/faceoffpercentages → totalFaceoffs, faceoffWinPct (no direct faceoffWins)
  *
- * Performance strategy:
- * 1. One endpoint is "primary" — it determines which N players appear on the page
- *    and drives sorting. Summary is primary for all fields except hits.
- *    Realtime is primary when sortBy === "hits".
- * 2. The other two endpoints are "secondary" — they fetch data for ONLY the playerIds
- *    returned by the primary, using `playerId in (id1,id2,...)` in cayenneExp.
- *    This limits secondary fetches to at most pageSize rows (10–50 players), never all 900.
- * 3. All three fetches happen in parallel where possible.
- * 4. `next: { revalidate: 300 }` on every fetch — Next.js caches raw NHL API responses
- *    for 5 minutes, so repeated calls with the same URL are served from cache.
- * 5. Player positions from the landing endpoint are cached in a module-level Map
- *    that persists across requests in the same worker process. Only called for players
- *    where positionCode is null in ALL three endpoints (very rare in practice).
+ * All players are fetched (no pagination). The API caps responses at 100 rows per
+ * request, so fetchAllPages loops: fetches the first page to get `total`, then fires
+ * all remaining pages in parallel. All fetches use Next.js cache (revalidate: 300).
+ *
+ * One endpoint is "primary" (drives sort order): summary for most fields, realtime
+ * when sortBy === "hits". Secondary endpoints fetch all matching players with the
+ * same filters and are merged by playerId.
  */
 
 import type {
@@ -41,60 +35,64 @@ const NHL_WEB_BASE = "https://api-web.nhle.com/v1";
 // The sort field that routes to the realtime endpoint rather than summary
 const REALTIME_SORT_FIELDS = new Set(["hits"]);
 
+const PAGE_SIZE = 100; // NHL API max rows per request
+
 // ============================================================
 // Internal fetch helpers
 // ============================================================
 
-/** Fetch all matching players from a stats endpoint (no pagination). */
-async function fetchPage<T>(
+/**
+ * Fetches ALL matching records from a stats endpoint by paginating through every page.
+ * Fires the first request to learn `total`, then fetches all remaining pages in parallel.
+ * Sort is applied as given — use this for the primary endpoint to preserve sort order.
+ */
+async function fetchAllPages<T>(
   report: string,
-  params: PlayersQueryParams
+  params: PlayersQueryParams,
+  sort: string
 ): Promise<{ data: T[]; total: number }> {
-  const url = new URL(`${NHL_STATS_BASE}/${report}`);
-  url.searchParams.set("cayenneExp", buildCayenneExp(params));
-  url.searchParams.set("factCayenneExp", buildFactCayenneExp());
-  url.searchParams.set("isAggregate", "false");
-  url.searchParams.set("isGame", "false");
-  url.searchParams.set("sort", buildSortParam(params.sortBy, params.sortDir));
-  url.searchParams.set("start", "0");
-  url.searchParams.set("limit", "2000");
+  const makeUrl = (start: number) => {
+    const url = new URL(`${NHL_STATS_BASE}/${report}`);
+    url.searchParams.set("cayenneExp", buildCayenneExp(params));
+    url.searchParams.set("factCayenneExp", buildFactCayenneExp());
+    url.searchParams.set("isAggregate", "false");
+    url.searchParams.set("isGame", "false");
+    url.searchParams.set("sort", sort);
+    url.searchParams.set("start", String(start));
+    url.searchParams.set("limit", String(PAGE_SIZE));
+    return url.toString();
+  };
 
-  const res = await fetch(url.toString(), { next: { revalidate: 300 } });
-  if (!res.ok) {
+  const firstRes = await fetch(makeUrl(0), { next: { revalidate: 300 } });
+  if (!firstRes.ok) {
     throw new NhlApiError(
-      `NHL ${report} returned ${res.status}: ${res.statusText}`,
-      res.status
+      `NHL ${report} returned ${firstRes.status}: ${firstRes.statusText}`,
+      firstRes.status
     );
   }
-  return res.json();
-}
+  const first = await firstRes.json() as { data: T[]; total: number };
+  if (first.data.length >= first.total) return first;
 
-/** Fetch a stats endpoint filtered to specific playerIds (secondary/enrichment fetch). */
-async function fetchByIds<T>(
-  report: string,
-  season: string,
-  playerIds: number[]
-): Promise<{ data: T[] }> {
-  if (playerIds.length === 0) return { data: [] };
-
-  const url = new URL(`${NHL_STATS_BASE}/${report}`);
-  url.searchParams.set(
-    "cayenneExp",
-    `seasonId=${season} and playerId in (${playerIds.join(",")})`
+  const remaining = Math.ceil((first.total - first.data.length) / PAGE_SIZE);
+  const rest = await Promise.all(
+    Array.from({ length: remaining }, (_, i) =>
+      fetch(makeUrl((i + 1) * PAGE_SIZE), { next: { revalidate: 300 } }).then(
+        (r) => r.ok ? (r.json() as Promise<{ data: T[] }>) : Promise.resolve({ data: [] as T[] })
+      )
+    )
   );
-  url.searchParams.set("factCayenneExp", "gamesPlayed>=0");
-  url.searchParams.set("isAggregate", "false");
-  url.searchParams.set("isGame", "false");
-  url.searchParams.set(
-    "sort",
-    JSON.stringify([{ property: "playerId", direction: "ASC" }])
-  );
-  url.searchParams.set("start", "0");
-  url.searchParams.set("limit", String(playerIds.length));
 
-  const res = await fetch(url.toString(), { next: { revalidate: 300 } });
-  if (!res.ok) return { data: [] }; // Don't fail the whole request for enrichment failures
-  return res.json();
+  const all = [...first.data, ...rest.flatMap((r) => r.data)];
+  // The NHL API can return the same player on multiple pages when sort values are tied.
+  // Deduplicate by playerId, keeping first occurrence to preserve sort order.
+  const seen = new Set<number>();
+  const deduped = all.filter((row) => {
+    const id = (row as { playerId: number }).playerId;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return { data: deduped, total: first.total };
 }
 
 // ============================================================
@@ -156,63 +154,55 @@ async function enrichMergedPositions(rows: MergedSkaterRow[]): Promise<void> {
 // ============================================================
 
 /**
- * Fetches all player stats needed for one page by querying three NHL API endpoints
- * and merging the results by playerId.
+ * Fetches ALL player stats by querying three NHL API endpoints and merging by playerId.
+ * Each endpoint is fully paginated (100 rows/request, all pages fetched).
  *
- * Primary endpoint (determines pagination + sort order):
+ * Primary endpoint (determines sort order):
  *   - skater/realtime  when sortBy === "hits"
  *   - skater/summary   for all other sort fields
  *
- * Secondary endpoints (fetched for the current page's playerIds only):
- *   - The non-primary summary/realtime endpoint
- *   - skater/faceoffpercentages (always secondary — faceoffWins is derived, not sortable)
+ * Secondary endpoints use the same filters but are sorted by playerId (order irrelevant
+ * since they're merged into a Map).
  */
 export async function fetchAllPlayerStats(params: PlayersQueryParams): Promise<{
   rows: MergedSkaterRow[];
   total: number;
 }> {
   const primaryIsRealtime = REALTIME_SORT_FIELDS.has(params.sortBy);
+  const primarySort = buildSortParam(params.sortBy, params.sortDir);
+  const secondarySort = JSON.stringify([{ property: "playerId", direction: "ASC" }]);
 
   let summaryRows: NhlSkaterSummaryRow[];
   let realtimeRows: NhlSkaterRealtimeRow[];
+  let faceoffRows: NhlSkaterFaceoffRow[];
   let total: number;
 
-  let ff: { data: NhlSkaterFaceoffRow[] };
-
   if (primaryIsRealtime) {
-    // Primary: realtime (user sorted by hits)
-    const rt = await fetchPage<NhlSkaterRealtimeRow>("skater/realtime", params);
+    const [rt, sm, fo] = await Promise.all([
+      fetchAllPages<NhlSkaterRealtimeRow>("skater/realtime", params, primarySort),
+      fetchAllPages<NhlSkaterSummaryRow>("skater/summary", params, secondarySort),
+      fetchAllPages<NhlSkaterFaceoffRow>("skater/faceoffpercentages", params, secondarySort),
+    ]);
     realtimeRows = rt.data;
     total = rt.total;
-
-    const playerIds = realtimeRows.map((r) => r.playerId);
-    // Fetch summary and faceoffs in parallel for this page's players
-    const [sm, fo] = await Promise.all([
-      fetchByIds<NhlSkaterSummaryRow>("skater/summary", params.season, playerIds),
-      fetchByIds<NhlSkaterFaceoffRow>("skater/faceoffpercentages", params.season, playerIds),
-    ]);
     summaryRows = sm.data;
-    ff = fo;
+    faceoffRows = fo.data;
   } else {
-    // Primary: summary
-    const sm = await fetchPage<NhlSkaterSummaryRow>("skater/summary", params);
+    const [sm, rt, fo] = await Promise.all([
+      fetchAllPages<NhlSkaterSummaryRow>("skater/summary", params, primarySort),
+      fetchAllPages<NhlSkaterRealtimeRow>("skater/realtime", params, secondarySort),
+      fetchAllPages<NhlSkaterFaceoffRow>("skater/faceoffpercentages", params, secondarySort),
+    ]);
     summaryRows = sm.data;
     total = sm.total;
-
-    const playerIds = summaryRows.map((r) => r.playerId);
-    // Fetch realtime and faceoffs in parallel for this page's players
-    const [rt, fo] = await Promise.all([
-      fetchByIds<NhlSkaterRealtimeRow>("skater/realtime", params.season, playerIds),
-      fetchByIds<NhlSkaterFaceoffRow>("skater/faceoffpercentages", params.season, playerIds),
-    ]);
     realtimeRows = rt.data;
-    ff = fo;
+    faceoffRows = fo.data;
   }
 
   // Build lookup maps for O(1) joins
   const summaryMap = new Map(summaryRows.map((r) => [r.playerId, r]));
   const realtimeMap = new Map(realtimeRows.map((r) => [r.playerId, r]));
-  const faceoffMap = new Map(ff.data.map((r) => [r.playerId, r]));
+  const faceoffMap = new Map(faceoffRows.map((r) => [r.playerId, r]));
 
   // Preserve primary endpoint's order
   const orderedIds = primaryIsRealtime
@@ -257,7 +247,7 @@ export async function fetchAllPlayerStats(params: PlayersQueryParams): Promise<{
 // Overall quality score computation
 // ============================================================
 
-const RANK_FIELDS: (keyof MergedSkaterRow)[] = [
+const RANK_FIELDS_BASE: (keyof MergedSkaterRow)[] = [
   "goals",
   "assists",
   "plusMinus",
@@ -265,31 +255,29 @@ const RANK_FIELDS: (keyof MergedSkaterRow)[] = [
   "shPoints",
   "gameWinningGoals",
   "shots",
-  "faceoffWins",
   "hits",
 ];
 
 /**
  * Computes per-player overall quality scores from the full player list.
- * For each of 9 stat categories, assigns rank (1 = best, ties share minimum rank)
- * and accumulates score = 1 - rank/N per category. Max possible score ≈ 9.0.
+ * For each of 9 stat categories: score = player_value / category_max.
+ * The category leader always gets 1.0; everyone else gets a proportional fraction.
+ * Scores are summed across all categories — max possible OVR is 9.0.
+ *
+ * If the category max is <= 0 (e.g. every player has 0 or negative plusMinus),
+ * that category is skipped to avoid division by zero or inverted scoring.
  */
-export function computePlayerScores(allRows: MergedSkaterRow[]): PlayerScoreMap {
-  const N = allRows.length;
+export function computePlayerScores(allRows: MergedSkaterRow[], includeFW = true): PlayerScoreMap {
+  const fields = includeFW ? [...RANK_FIELDS_BASE, "faceoffWins" as const] : RANK_FIELDS_BASE;
   const scores = new Map<number, number>(allRows.map((r) => [r.playerId, 0]));
 
-  for (const field of RANK_FIELDS) {
-    const sorted = allRows.slice().sort(
-      (a, b) => (b[field] as number) - (a[field] as number)
-    );
+  for (const field of fields) {
+    const max = Math.max(...allRows.map((r) => r[field] as number));
+    if (max <= 0) continue;
 
-    let rank = 1;
-    for (let i = 0; i < sorted.length; i++) {
-      if (i > 0 && sorted[i][field] !== sorted[i - 1][field]) {
-        rank = i + 1;
-      }
-      const categoryScore = 1 - rank / N;
-      scores.set(sorted[i].playerId, (scores.get(sorted[i].playerId) ?? 0) + categoryScore);
+    for (const row of allRows) {
+      const categoryScore = (row[field] as number) / max;
+      scores.set(row.playerId, (scores.get(row.playerId) ?? 0) + categoryScore);
     }
   }
 

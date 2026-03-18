@@ -60,9 +60,18 @@ export async function GET(request: Request): Promise<Response> {
   const params = paramsOrError;
 
   try {
-    // Fetch all players (no pagination). Compute OVR scores from the full dataset.
-    const { rows: mergedRows, total } = await fetchAllPlayerStats(params);
-    const scoreMap = computePlayerScores(mergedRows);
+    // OVR must be stable regardless of sort or filters — always compute from the full
+    // unfiltered season dataset with summary as primary (goals sort). This ensures N
+    // is consistent and every player is ranked against all NHL players, not a subset.
+    const ovrParams: PlayersQueryParams = { season: params.season, sortBy: "goals", sortDir: "DESC" };
+
+    const [{ rows: mergedRows, total }, { rows: ovrRows }] = await Promise.all([
+      fetchAllPlayerStats(params),
+      fetchAllPlayerStats(ovrParams),
+    ]);
+
+    const includeFW = searchParams.get("includeFW") !== "0";
+    const scoreMap = computePlayerScores(ovrRows, includeFW);
     const rows = mapMergedRowsToPlayerRows(mergedRows, scoreMap);
 
     // faceoffWins and overallScore are computed fields — sort client-side after mapping.

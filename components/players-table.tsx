@@ -31,6 +31,7 @@ export function PlayersTable() {
   const season = searchParams.get("season") || getCurrentSeason();
   const sortBy = searchParams.get("sortBy") || "goals";
   const sortDir = (searchParams.get("sortDir") || "DESC") as "ASC" | "DESC";
+  const includeFW = searchParams.get("includeFW") !== "0";
 
   // Fetch data whenever search params change
   const paramsString = searchParams.toString();
@@ -163,6 +164,25 @@ export function PlayersTable() {
                       {col.header}
                       {canSort && (
                         <SortIcon active={isActive} dir={sortDir} />
+                      )}
+                      {col.key === "overallScore" && (
+                        <div
+                          className="flex items-center justify-end gap-1 mt-0.5 font-normal normal-case tracking-normal text-gray-400 dark:text-gray-500"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            id="fw-toggle"
+                            type="checkbox"
+                            checked={includeFW}
+                            onChange={(e) =>
+                              pushParams({ includeFW: e.target.checked ? "1" : "0" })
+                            }
+                            className="cursor-pointer"
+                          />
+                          <label htmlFor="fw-toggle" className="cursor-pointer text-xs">
+                            FW
+                          </label>
+                        </div>
                       )}
                     </th>
                   );
