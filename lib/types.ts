@@ -105,11 +105,23 @@ export interface PlayerRow {
   hits: number;
   /** Computed overall quality score: sum of per-category rank scores across 9 stat categories */
   overallScore: number;
+  /** Bell-curve grade based on OVR percentile among all NHL players: S/A/B/C/D/F */
+  grade: string;
+}
+
+export interface GradeThreshold {
+  cutS: number;
+  cutA: number;
+  cutB: number;
+  cutC: number;
+  cutD: number;
 }
 
 export interface PlayersApiResponse {
   rows: PlayerRow[];
   total: number;
+  /** Per-stat grade thresholds computed from all NHL players, keyed by PlayerRow field name. */
+  thresholds: Record<string, GradeThreshold>;
 }
 
 /** Maps playerId → computed overall quality score (0–9.0 range). */

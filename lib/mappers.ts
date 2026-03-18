@@ -103,6 +103,7 @@ export function mapMergedRowToPlayerRow(row: MergedSkaterRow, overallScore = 0):
     faceoffWins: row.faceoffWins ?? 0,
     hits: row.hits ?? 0,
     overallScore,
+    grade: "",  // set by route after grade thresholds are computed
   };
 }
 

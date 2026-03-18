@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchAllPlayerStats, computePlayerScores, NhlApiError } from "@/lib/nhl-api";
 import { mapMergedRowsToPlayerRows, VALID_SORT_FIELDS, getCurrentSeason } from "@/lib/mappers";
-import type { PlayersApiResponse, PlayersQueryParams, SortDirection } from "@/lib/types";
+import type { GradeThreshold, PlayersApiResponse, PlayersQueryParams, SortDirection } from "@/lib/types";
 
 const VALID_SORT_DIRS = new Set<string>(["ASC", "DESC"]);
 const VALID_POSITIONS = new Set(["C", "L", "R", "D", "G"]);
@@ -74,6 +74,39 @@ export async function GET(request: Request): Promise<Response> {
     const scoreMap = computePlayerScores(ovrRows, includeFW);
     const rows = mapMergedRowsToPlayerRows(mergedRows, scoreMap);
 
+    // Compute grade thresholds for each stat category from all NHL players.
+    // Cutoffs correspond to bell-curve percentile bands: S/A/B/C/D/F.
+    const threshold = (vals: number[]): GradeThreshold => {
+      const sorted = vals.slice().sort((a, b) => b - a);
+      const N = sorted.length;
+      return {
+        cutS: sorted[Math.floor(N * 0.023)] ?? 0,
+        cutA: sorted[Math.floor(N * 0.159)] ?? 0,
+        cutB: sorted[Math.floor(N * 0.500)] ?? 0,
+        cutC: sorted[Math.floor(N * 0.841)] ?? 0,
+        cutD: sorted[Math.floor(N * 0.977)] ?? 0,
+      };
+    };
+
+    const thresholds: Record<string, GradeThreshold> = {
+      goals:             threshold(ovrRows.map((r) => r.goals)),
+      assists:           threshold(ovrRows.map((r) => r.assists)),
+      plusMinus:         threshold(ovrRows.map((r) => r.plusMinus)),
+      powerPlayPoints:   threshold(ovrRows.map((r) => r.ppPoints)),
+      shortHandedPoints: threshold(ovrRows.map((r) => r.shPoints)),
+      gameWinningGoals:  threshold(ovrRows.map((r) => r.gameWinningGoals)),
+      shots:             threshold(ovrRows.map((r) => r.shots)),
+      faceoffWins:       threshold(ovrRows.map((r) => r.faceoffWins)),
+      hits:              threshold(ovrRows.map((r) => r.hits)),
+      overallScore:      threshold(Array.from(scoreMap.values())),
+    };
+
+    const gradeForScore = (s: number) => {
+      const t = thresholds.overallScore;
+      return s >= t.cutS ? "S" : s >= t.cutA ? "A" : s >= t.cutB ? "B" : s >= t.cutC ? "C" : s >= t.cutD ? "D" : "F";
+    };
+    for (const row of rows) row.grade = gradeForScore(row.overallScore);
+
     // faceoffWins and overallScore are computed fields — sort client-side after mapping.
     if (params.sortBy === "faceoffWins" || params.sortBy === "overallScore") {
       const field = params.sortBy;
@@ -81,7 +114,7 @@ export async function GET(request: Request): Promise<Response> {
       rows.sort((a, b) => dir * ((a[field] as number) - (b[field] as number)));
     }
 
-    const response: PlayersApiResponse = { rows, total };
+    const response: PlayersApiResponse = { rows, total, thresholds };
 
     return NextResponse.json(response);
   } catch (err) {
