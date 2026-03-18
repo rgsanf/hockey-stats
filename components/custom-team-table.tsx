@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { COLUMN_DEFS } from "@/lib/mappers";
 import { PlayerRowItem, SortIcon } from "@/components/players-table";
+import { COLUMN_DEFS } from "@/lib/mappers";
 import type { GradeThreshold, PlayerRow } from "@/lib/types";
+import { useMemo, useState } from "react";
 
 export function CustomTeamTable({
   players,
@@ -34,8 +34,8 @@ export function CustomTeamTable({
 
   const sorted = useMemo(() => {
     return [...players].sort((a, b) => {
-      const av = (a as Record<string, unknown>)[sortBy];
-      const bv = (b as Record<string, unknown>)[sortBy];
+      const av = (a as unknown as Record<string, unknown>)[sortBy];
+      const bv = (b as unknown as Record<string, unknown>)[sortBy];
       if (typeof av === "number" && typeof bv === "number") {
         return sortDir === "DESC" ? bv - av : av - bv;
       }
@@ -93,7 +93,9 @@ export function CustomTeamTable({
                         .filter(Boolean)
                         .join(" ")}
                       onClick={
-                        canSort ? () => handleSort(col.key as string) : undefined
+                        canSort
+                          ? () => handleSort(col.key as string)
+                          : undefined
                       }
                     >
                       {col.header}
