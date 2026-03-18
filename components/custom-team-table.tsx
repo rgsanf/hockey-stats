@@ -9,12 +9,14 @@ export function CustomTeamTable({
   players,
   thresholds,
   onRemove,
+  onClear,
   showGrade,
   showPerGame,
 }: {
   players: PlayerRow[];
   thresholds: Record<string, GradeThreshold>;
   onRemove: (playerId: number) => void;
+  onClear: () => void;
   showGrade: boolean;
   showPerGame: boolean;
 }) {
@@ -53,6 +55,14 @@ export function CustomTeamTable({
         <span className="text-sm text-gray-400 dark:text-gray-500">
           {players.length} player{players.length !== 1 ? "s" : ""}
         </span>
+        <button
+          onClick={onClear}
+          className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 cursor-pointer leading-none"
+          aria-label="Clear custom team"
+          title="Clear custom team"
+        >
+          ✕
+        </button>
       </div>
 
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">

@@ -60,6 +60,10 @@ export function PlayersPageClient() {
     updatePlayers((prev) => prev.filter((p) => p.playerId !== playerId));
   }
 
+  function handleClearTeam() {
+    updatePlayers(() => []);
+  }
+
   const handleRowsReady = useCallback((rows: PlayerRow[]) => {
     const scoreMap = new Map(rows.map((r) => [r.playerId, { overallScore: r.overallScore, grade: r.grade }]));
     setCustomPlayers((prev) =>
@@ -108,6 +112,7 @@ export function PlayersPageClient() {
           players={customPlayers}
           thresholds={showPerGame ? perGameThresholds : thresholds}
           onRemove={handleRemove}
+          onClear={handleClearTeam}
           showGrade={showGrade}
           showPerGame={showPerGame}
         />
