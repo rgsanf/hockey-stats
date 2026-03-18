@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r unstable_cache /c/Users/ryang/code/hockey-stats/node_modules/next/dist/server/ --include=*.d.ts -l)"
+    ]
+  }
+}
