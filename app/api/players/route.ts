@@ -88,10 +88,19 @@ export async function GET(request: Request): Promise<Response> {
       };
     };
 
+    // For stats that can go negative (e.g. +/-), shift all values by -min so they're
+    // non-negative before computing percentile bands, and store the offset so the client
+    // can apply the same shift when comparing a player's value against the cuts.
+    const normalizedThreshold = (vals: number[]): GradeThreshold => {
+      const min = Math.min(...vals);
+      const offset = min < 0 ? -min : 0;
+      return { ...threshold(vals.map((v) => v + offset)), ...(offset > 0 ? { offset } : {}) };
+    };
+
     const thresholds: Record<string, GradeThreshold> = {
       goals:             threshold(ovrRows.map((r) => r.goals)),
       assists:           threshold(ovrRows.map((r) => r.assists)),
-      plusMinus:         threshold(ovrRows.map((r) => r.plusMinus)),
+      plusMinus:         normalizedThreshold(ovrRows.map((r) => r.plusMinus)),
       powerPlayPoints:   threshold(ovrRows.map((r) => r.ppPoints)),
       shortHandedPoints: threshold(ovrRows.map((r) => r.shPoints)),
       gameWinningGoals:  threshold(ovrRows.map((r) => r.gameWinningGoals)),
@@ -99,6 +108,22 @@ export async function GET(request: Request): Promise<Response> {
       faceoffWins:       threshold(ovrRows.map((r) => r.faceoffWins)),
       hits:              threshold(ovrRows.map((r) => r.hits)),
       overallScore:      threshold(Array.from(scoreMap.values())),
+    };
+
+    // Per-game thresholds: same percentile bands but computed from stat ÷ GP.
+    const gpMap = new Map(ovrRows.map((r) => [r.playerId, Math.max(r.gamesPlayed, 1)]));
+    const pg = (vals: number[]) => threshold(vals); // reuse same percentile logic
+    const perGameThresholds: Record<string, GradeThreshold> = {
+      goals:             pg(ovrRows.map((r) => r.goals / gpMap.get(r.playerId)!)),
+      assists:           pg(ovrRows.map((r) => r.assists / gpMap.get(r.playerId)!)),
+      plusMinus:         normalizedThreshold(ovrRows.map((r) => r.plusMinus / gpMap.get(r.playerId)!)),
+      powerPlayPoints:   pg(ovrRows.map((r) => r.ppPoints / gpMap.get(r.playerId)!)),
+      shortHandedPoints: pg(ovrRows.map((r) => r.shPoints / gpMap.get(r.playerId)!)),
+      gameWinningGoals:  pg(ovrRows.map((r) => r.gameWinningGoals / gpMap.get(r.playerId)!)),
+      shots:             pg(ovrRows.map((r) => r.shots / gpMap.get(r.playerId)!)),
+      faceoffWins:       pg(ovrRows.map((r) => r.faceoffWins / gpMap.get(r.playerId)!)),
+      hits:              pg(ovrRows.map((r) => r.hits / gpMap.get(r.playerId)!)),
+      overallScore:      pg([...scoreMap.entries()].map(([id, score]) => score / (gpMap.get(id) ?? 1))),
     };
 
     const gradeForScore = (s: number) => {
@@ -114,7 +139,7 @@ export async function GET(request: Request): Promise<Response> {
       rows.sort((a, b) => dir * ((a[field] as number) - (b[field] as number)));
     }
 
-    const response: PlayersApiResponse = { rows, total, thresholds };
+    const response: PlayersApiResponse = { rows, total, thresholds, perGameThresholds };
 
     return NextResponse.json(response);
   } catch (err) {

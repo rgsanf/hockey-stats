@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { PlayersTable } from "@/components/players-table";
+import { PlayersPageClient } from "@/components/players-page-client";
 import { LoadingSkeleton } from "@/components/loading-skeleton";
 import { COLUMN_DEFS } from "@/lib/mappers";
 
@@ -10,19 +10,9 @@ export default function PlayersPage() {
   return (
     <main className="min-h-screen bg-white dark:bg-gray-950">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-50 tracking-tight">
-            NHL Player Stats
-          </h1>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Fantasy-relevant skater statistics — current season
-          </p>
-        </div>
-
-        {/* PlayersTable uses useSearchParams() so it must live inside a Suspense boundary */}
+        {/* PlayersPageClient uses useSearchParams() so it must live inside a Suspense boundary */}
         <Suspense fallback={<TableShell />}>
-          <PlayersTable />
+          <PlayersPageClient />
         </Suspense>
       </div>
     </main>

@@ -64,7 +64,12 @@ export function buildSortParam(sortBy: string, sortDir: SortDirection): string {
   };
 
   const apiField = fieldMap[sortBy] ?? "goals";
-  return JSON.stringify([{ property: apiField, direction: sortDir }]);
+  // Secondary sort by playerId ensures stable ordering across pages when stat values are tied.
+  // Without this, players near page boundaries (rank ~100, ~200, ...) can fall between pages.
+  return JSON.stringify([
+    { property: apiField, direction: sortDir },
+    { property: "playerId", direction: "ASC" },
+  ]);
 }
 
 // ============================================================

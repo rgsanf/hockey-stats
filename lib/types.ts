@@ -115,6 +115,8 @@ export interface GradeThreshold {
   cutB: number;
   cutC: number;
   cutD: number;
+  /** Shift added to a player's value before comparing against cuts (used to normalise negative-capable stats like +/-). */
+  offset?: number;
 }
 
 export interface PlayersApiResponse {
@@ -122,6 +124,8 @@ export interface PlayersApiResponse {
   total: number;
   /** Per-stat grade thresholds computed from all NHL players, keyed by PlayerRow field name. */
   thresholds: Record<string, GradeThreshold>;
+  /** Same thresholds but computed from per-game values (stat ÷ GP). Used when Per Game mode is on. */
+  perGameThresholds: Record<string, GradeThreshold>;
 }
 
 /** Maps playerId → computed overall quality score (0–9.0 range). */

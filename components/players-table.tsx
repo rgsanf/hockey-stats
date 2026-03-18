@@ -9,7 +9,7 @@ import type {
   PlayersApiResponse,
 } from "@/lib/types";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, useTransition } from "react";
+import React, { useCallback, useEffect, useState, useTransition } from "react";
 
 // -------------------------------------------------------
 // Grade helpers
@@ -25,11 +25,12 @@ const GRADE_COLORS: Record<string, string> = {
 };
 
 function getGrade(value: number, t: GradeThreshold): string {
-  if (value >= t.cutS) return "S";
-  if (value >= t.cutA) return "A";
-  if (value >= t.cutB) return "B";
-  if (value >= t.cutC) return "C";
-  if (value >= t.cutD) return "D";
+  const v = value + (t.offset ?? 0);
+  if (v >= t.cutS) return "S";
+  if (v >= t.cutA) return "A";
+  if (v >= t.cutB) return "B";
+  if (v >= t.cutC) return "C";
+  if (v >= t.cutD) return "D";
   return "F";
 }
 
@@ -37,7 +38,7 @@ function getGrade(value: number, t: GradeThreshold): string {
 // Sort indicator
 // -------------------------------------------------------
 
-function SortIcon({ active, dir }: { active: boolean; dir: "ASC" | "DESC" }) {
+export function SortIcon({ active, dir }: { active: boolean; dir: "ASC" | "DESC" }) {
   if (!active) return <span className="ml-1 text-gray-400 text-xs">⇅</span>;
   return (
     <span className="ml-1 text-blue-500 text-xs">
@@ -50,7 +51,23 @@ function SortIcon({ active, dir }: { active: boolean; dir: "ASC" | "DESC" }) {
 // Main table component
 // -------------------------------------------------------
 
-export function PlayersTable() {
+export function PlayersTable({
+  onAddPlayer,
+  onThresholdsReady,
+  onPerGameThresholdsReady,
+  onRowsReady,
+  customPlayerIds = new Set(),
+  showGrade = false,
+  showPerGame = false,
+}: {
+  onAddPlayer?: (player: PlayerRow) => void;
+  onThresholdsReady?: (thresholds: Record<string, GradeThreshold>) => void;
+  onPerGameThresholdsReady?: (thresholds: Record<string, GradeThreshold>) => void;
+  onRowsReady?: (rows: PlayerRow[]) => void;
+  customPlayerIds?: Set<number>;
+  showGrade?: boolean;
+  showPerGame?: boolean;
+} = {}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
@@ -59,11 +76,9 @@ export function PlayersTable() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [availableTeams, setAvailableTeams] = useState<string[]>([]);
-  const [showGrade, setShowGrade] = useState(false);
 
   const sortBy = searchParams.get("sortBy") || "goals";
   const sortDir = (searchParams.get("sortDir") || "DESC") as "ASC" | "DESC";
-  const includeFW = searchParams.get("includeFW") !== "0";
 
   const paramsString = searchParams.toString();
 
@@ -82,6 +97,9 @@ export function PlayersTable() {
         }
         const json = (await res.json()) as PlayersApiResponse;
         setData(json);
+        onThresholdsReady?.(json.thresholds);
+        onPerGameThresholdsReady?.(json.perGameThresholds);
+        onRowsReady?.(json.rows);
         const teams = Array.from(
           new Set(
             json.rows
@@ -97,7 +115,7 @@ export function PlayersTable() {
         setLoading(false);
       }
     },
-    [paramsString],
+    [paramsString, onThresholdsReady, onPerGameThresholdsReady, onRowsReady],
   );
 
   useEffect(() => {
@@ -125,18 +143,9 @@ export function PlayersTable() {
 
   return (
     <div className="space-y-3">
-      {/* Filters + grade toggle */}
+      {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <TableFilters availableTeams={availableTeams} />
-        <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showGrade}
-            onChange={(e) => setShowGrade(e.target.checked)}
-            className="cursor-pointer"
-          />
-          Grades
-        </label>
       </div>
 
       {/* Error state */}
@@ -165,6 +174,7 @@ export function PlayersTable() {
           <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 z-10 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
               <tr>
+                {onAddPlayer && <th className="w-8" />}
                 {COLUMN_DEFS.map((col) => {
                   const isActive = sortBy === col.key;
                   const canSort = col.sortable;
@@ -201,30 +211,6 @@ export function PlayersTable() {
                     >
                       {col.header}
                       {canSort && <SortIcon active={isActive} dir={sortDir} />}
-                      {col.key === "overallScore" && (
-                        <div
-                          className="flex items-center justify-end gap-1 mt-0.5 font-normal normal-case tracking-normal text-gray-400 dark:text-gray-500"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <input
-                            id="fw-toggle"
-                            type="checkbox"
-                            checked={includeFW}
-                            onChange={(e) =>
-                              pushParams({
-                                includeFW: e.target.checked ? "1" : "0",
-                              })
-                            }
-                            className="cursor-pointer"
-                          />
-                          <label
-                            htmlFor="fw-toggle"
-                            className="cursor-pointer text-xs"
-                          >
-                            FW
-                          </label>
-                        </div>
-                      )}
                     </th>
                   );
                 })}
@@ -233,11 +219,11 @@ export function PlayersTable() {
 
             <tbody>
               {showSkeleton ? (
-                <LoadingSkeleton rows={25} columns={COLUMN_DEFS.length} />
+                <LoadingSkeleton rows={25} columns={COLUMN_DEFS.length + (onAddPlayer ? 1 : 0)} />
               ) : !error && data?.rows.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={COLUMN_DEFS.length}
+                    colSpan={COLUMN_DEFS.length + (onAddPlayer ? 1 : 0)}
                     className="px-3 py-12 text-center text-gray-400 dark:text-gray-500"
                   >
                     No players match your search.
@@ -249,7 +235,23 @@ export function PlayersTable() {
                     key={player.playerId}
                     player={player}
                     showGrade={showGrade}
-                    thresholds={data.thresholds}
+                    showPerGame={showPerGame}
+                    thresholds={showPerGame ? data.perGameThresholds : data.thresholds}
+                    action={
+                      onAddPlayer ? (
+                        customPlayerIds.has(player.playerId) ? (
+                          <span className="flex items-center justify-center text-green-500 dark:text-green-400 text-sm select-none">✓</span>
+                        ) : (
+                          <button
+                            onClick={() => onAddPlayer(player)}
+                            className="flex items-center justify-center w-full text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 font-bold text-base leading-none cursor-pointer"
+                            aria-label={`Add ${player.name}`}
+                          >
+                            +
+                          </button>
+                        )
+                      ) : undefined
+                    }
                   />
                 ))
               )}
@@ -271,43 +273,51 @@ export function PlayersTable() {
 // Row component
 // -------------------------------------------------------
 
-function PlayerRowItem({
+export function PlayerRowItem({
   player,
   showGrade,
+  showPerGame,
   thresholds,
+  action,
 }: {
   player: PlayerRow;
   showGrade: boolean;
+  showPerGame: boolean;
   thresholds: Record<string, GradeThreshold>;
+  action?: React.ReactNode;
 }) {
   const numCell =
     "px-3 py-2.5 text-right tabular-nums text-gray-700 dark:text-gray-300";
 
-  // Renders a stat cell: grade letter (colored) when showGrade, raw value otherwise.
-  const statCell = (value: number, field: string, display?: string) => {
+  const gp = Math.max(player.gamesPlayed, 1);
+
+  const statCell = (value: number, field: string) => {
     if (showGrade && thresholds[field]) {
-      const grade = getGrade(value, thresholds[field]);
+      const gradeVal = showPerGame ? value / gp : value;
+      const grade = getGrade(gradeVal, thresholds[field]);
       return (
         <td className={`px-3 py-2.5 text-right ${GRADE_COLORS[grade] ?? ""}`}>
           {grade}
         </td>
       );
     }
-    return <td className={numCell}>{display ?? value}</td>;
+    const display = showPerGame ? (value / gp).toFixed(2) : String(value);
+    return <td className={numCell}>{display}</td>;
   };
 
-  const signed = player.plusMinus > 0 ? "+" : "";
-
-  // plusMinus has special raw display (color + sign), but grade mode just shows letter
   const plusMinusCell = () => {
     if (showGrade && thresholds.plusMinus) {
-      const grade = getGrade(player.plusMinus, thresholds.plusMinus);
+      const val = showPerGame ? player.plusMinus / gp : player.plusMinus;
+      const grade = getGrade(val, thresholds.plusMinus);
       return (
         <td className={`px-3 py-2.5 text-right ${GRADE_COLORS[grade] ?? ""}`}>
           {grade}
         </td>
       );
     }
+    const display = showPerGame
+      ? (player.plusMinus / gp).toFixed(2)
+      : (player.plusMinus > 0 ? "+" : "") + player.plusMinus;
     return (
       <td
         className={`${numCell} ${
@@ -318,28 +328,36 @@ function PlayerRowItem({
               : ""
         }`}
       >
-        {signed}
-        {player.plusMinus}
+        {display}
       </td>
     );
   };
 
-  // OVR cell: use pre-computed player.grade (based on OVR thresholds) in grade mode
   const ovrCell = () => {
     if (showGrade) {
+      if (showPerGame && thresholds.overallScore) {
+        const grade = getGrade(player.overallScore / gp, thresholds.overallScore);
+        return (
+          <td className={`px-3 py-2.5 text-right ${GRADE_COLORS[grade] ?? ""}`}>
+            {grade}
+          </td>
+        );
+      }
       return (
-        <td
-          className={`px-3 py-2.5 text-right ${GRADE_COLORS[player.grade] ?? ""}`}
-        >
+        <td className={`px-3 py-2.5 text-right ${GRADE_COLORS[player.grade] ?? ""}`}>
           {player.grade}
         </td>
       );
     }
-    return <td className={numCell}>{player.overallScore.toFixed(2)}</td>;
+    const score = showPerGame ? player.overallScore / gp : player.overallScore;
+    return <td className={numCell}>{score.toFixed(2)}</td>;
   };
 
   return (
     <tr className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+      {action !== undefined && (
+        <td className="px-2 py-2.5 w-8 text-center">{action}</td>
+      )}
       <td className="px-3 py-2.5 font-medium text-gray-900 dark:text-gray-100 whitespace-nowrap">
         {player.name}
       </td>
